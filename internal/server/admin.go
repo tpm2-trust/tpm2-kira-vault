@@ -19,8 +19,8 @@ import (
 	"github.com/mrwiora/tpm2-kira-vault/internal/state"
 )
 
-// The admin interface's messages. Version 2 serves the same handlers on
-// TCP with authentication.
+// The admin interface's messages. The operator interface serves a part
+// of the same handlers over HTTPS with a bearer token (operator.go).
 
 // DeviceView is a device as the operator sees it: no keys.
 type DeviceView struct {
