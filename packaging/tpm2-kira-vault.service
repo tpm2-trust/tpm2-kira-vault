@@ -1,0 +1,53 @@
+[Unit]
+Description=tpm2-kira vault: releases the remote parts of tpm+vault keyslots
+Documentation=https://github.com/mrwiora/tpm2-kira-vault
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/var/lib/tpm2-kira-vault/config.json
+
+[Service]
+Type=simple
+# Root, because the TPM and the root-only admin socket need it; every
+# capability is dropped.
+User=root
+ExecStart=/usr/bin/tpm2-kira-vault serve --dir /var/lib/tpm2-kira-vault
+Restart=on-failure
+RestartSec=2s
+
+StateDirectory=tpm2-kira-vault
+StateDirectoryMode=0700
+RuntimeDirectory=tpm2-kira-vault
+RuntimeDirectoryMode=0700
+UMask=0077
+# No core dump may hold a device key.
+LimitCORE=0
+
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=
+NoNewPrivileges=yes
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target
