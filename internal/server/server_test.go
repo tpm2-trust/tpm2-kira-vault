@@ -558,7 +558,7 @@ func TestApproveMode(t *testing.T) {
 	changed.Generation = 6
 	_, err := e.client.Send(&changed)
 	wantHTTP(t, err, 400, "unchanged")
-	if code, msg := e.adminDo("POST", "/v1/requests/"+id+"/approve", map[string]any{"pepper": "c2VjcmV0"}, nil); code != 400 || msg != "pepper is not supported yet" {
+	if code, msg := e.adminDo("POST", "/v1/requests/"+id+"/approve", map[string]any{"pepper": "secret"}, nil); code != 400 || msg != "this device was enrolled without a pepper" {
 		t.Fatalf("pepper: %d %q", code, msg)
 	}
 	if code, msg := e.adminDo("POST", "/v1/requests/"+id+"/approve", nil, nil); code != 200 {

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -39,6 +40,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) error {
 	pcrsFlag := fs.String("pcrs", "7", "the vault's own PCRs the device keys are sealed to (SHA-256 bank)")
 	tpmPath := fs.String("tpm", state.DefaultTPM, "TPM device or simulator socket")
 	sock := fs.String("admin-socket", state.DefaultAdminSocket, "the admin interface's Unix socket")
+	opListen := fs.String("operator-listen", "", "the operator interface's HTTPS address (default: off)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -53,6 +55,9 @@ func cmdInit(args []string, stdout, stderr io.Writer) error {
 	_, port, err := net.SplitHostPort(*listen)
 	if err != nil {
 		return fmt.Errorf("--listen %q: %w", *listen, err)
+	}
+	if err := checkOperatorListen(*opListen, *listen); err != nil {
+		return err
 	}
 	if *pubURL == "" {
 		host, err := os.Hostname()
@@ -113,7 +118,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	cfg := &state.Config{Listen: *listen, URL: *pubURL, PCRs: pcrs, TPM: *tpmPath, AdminSocket: *sock, RecoveryPublic: rpub}
+	cfg := &state.Config{Listen: *listen, URL: *pubURL, PCRs: pcrs, TPM: *tpmPath, AdminSocket: *sock, OperatorListen: *opListen, RecoveryPublic: rpub}
 	if err := d.SaveConfig(cfg); err != nil {
 		return err
 	}
@@ -122,7 +127,11 @@ func cmdInit(args []string, stdout, stderr io.Writer) error {
 	}
 
 	fmt.Fprintf(stdout, "Initialised the vault in %s.\n\n", *dir)
-	fmt.Fprintf(stdout, "  URL:   %s\n  pin:   %s\n  PCRs:  %s (SHA-256)\n  TPM:   %s\n\n", cfg.URL, pin, formatPCRs(pcrs), cfg.TPM)
+	fmt.Fprintf(stdout, "  URL:   %s\n  pin:   %s  (for curl: %s)\n  PCRs:  %s (SHA-256)\n  TPM:   %s\n", cfg.URL, pin, tlsutil.CurlPin(pin), formatPCRs(pcrs), cfg.TPM)
+	if u := server.OperatorURL(cfg); u != "" {
+		fmt.Fprintf(stdout, "  operator interface: %s (tokens: tpm2-kira-vault operator add NAME)\n", u)
+	}
+	fmt.Fprintln(stdout)
 	if len(pcrs) == 0 {
 		fmt.Fprintln(stderr, noPCRWarning)
 	}
@@ -223,9 +232,36 @@ func serve(ctx context.Context, d state.Dir, stderr io.Writer, ready chan<- stru
 	}
 	admin := &http.Server{Handler: srv.AdminHandler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: logger, BaseContext: base}
 
-	errc := make(chan error, 2)
+	// The operator interface: its own listener, so that it can be
+	// firewalled apart from the machines'.
+	var operator *http.Server
+	var opLn net.Listener
+	if cfg.OperatorListen != "" {
+		if opLn, err = net.Listen("tcp", cfg.OperatorListen); err != nil {
+			ln.Close()
+			adminLn.Close()
+			return err
+		}
+		operator = &http.Server{
+			Handler:           srv.OperatorHandler(),
+			TLSConfig:         tlsutil.ServerConfig(cert),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    16 << 10,
+			ErrorLog:          logger,
+			BaseContext:       base,
+		}
+	}
+
+	errc := make(chan error, 3)
 	go func() { errc <- machine.ServeTLS(ln, "", "") }()
 	go func() { errc <- admin.Serve(adminLn) }()
+	if operator != nil {
+		go func() { errc <- operator.ServeTLS(opLn, "", "") }()
+		logger.Printf("operator interface on %s", cfg.OperatorListen)
+	}
 	audit.Log(state.Entry{Event: "serve", Result: "started", Detail: "listening on " + cfg.Listen})
 	logger.Printf("serving %s on %s (pin %s), admin socket %s", cfg.URL, cfg.Listen, pin, cfg.AdminSocket)
 	if ready != nil {
@@ -240,9 +276,68 @@ func serve(ctx context.Context, d state.Dir, stderr io.Writer, ready chan<- stru
 	defer cancel()
 	machine.Shutdown(shut)
 	admin.Shutdown(shut)
+	if operator != nil {
+		operator.Shutdown(shut)
+	}
 	audit.Log(state.Entry{Event: "serve", Result: "stopped"})
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	return nil
+}
+
+// ── config ───────────────────────────────────────────────────────────────
+
+func checkOperatorListen(addr, listen string) error {
+	if addr == "" {
+		return nil
+	}
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return fmt.Errorf("operator-listen %q: %w", addr, err)
+	}
+	if addr == listen {
+		return fmt.Errorf("operator-listen %q is the machines' address: give it its own", addr)
+	}
+	return nil
+}
+
+// cmdConfig changes config.json. It refuses while serve runs, which reads
+// the configuration at its start.
+func cmdConfig(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", state.DefaultDir, "state directory")
+	pos, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 3 || pos[0] != "set" || pos[1] != "operator-listen" {
+		return errors.New(`usage: tpm2-kira-vault config set operator-listen ADDR|""`)
+	}
+	d := state.Dir{Path: *dir}
+	unlock, err := d.Lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	cfg, err := d.Config()
+	if err != nil {
+		return err
+	}
+	if err := checkOperatorListen(pos[2], cfg.Listen); err != nil {
+		return err
+	}
+	cfg.OperatorListen = pos[2]
+	if err := d.SaveConfig(cfg); err != nil {
+		return err
+	}
+	if err := logOnce(d, state.Entry{Event: "config", Actor: "admin", Result: "done", Detail: "operator-listen " + strconv.Quote(pos[2])}); err != nil {
+		return err
+	}
+	if pos[2] == "" {
+		fmt.Fprintln(stdout, "The operator interface is off from serve's next start.")
+	} else {
+		fmt.Fprintf(stdout, "The operator interface listens on %s (%s) from serve's next start.\n", pos[2], server.OperatorURL(cfg))
 	}
 	return nil
 }

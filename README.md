@@ -36,4 +36,20 @@ vault#    tpm2-kira-vault devices | requests | audit
 vault#    tpm2-kira-vault device revoke db-03                              # a machine reported stolen
 ```
 
+The operator interface (off by default) lets operators approve releases
+over the network, with the pepper of a device enrolled with one:
+
+```
+vault#    tpm2-kira-vault config set operator-listen :8444    # serve stopped; or init --operator-listen :8444
+vault#    tpm2-kira-vault operator add alice                  # prints the bearer token once, and a curl example
+anywhere$ curl -k --pinnedpubkey sha256//<base64 pin> -H "Authorization: Bearer $TOKEN" https://vault.example:8444/v1/requests
+anywhere$ curl -k --pinnedpubkey sha256//<base64 pin> -H "Authorization: Bearer $TOKEN" \
+            -d '{"pepper":"…"}' https://vault.example:8444/v1/requests/ID/approve
+```
+
+It serves `GET /v1/requests`, `POST /v1/requests/{id}/approve` (body `{}`
+or `{"pepper":"…"}`), `POST /v1/requests/{id}/deny`, `GET /v1/devices` and
+`GET /v1/devices/{id}`, nothing else. `-k` is right: `--pinnedpubkey` is the
+check, against the vault's self-signed key.
+
 `tpm2-kira-vault help` lists every command.

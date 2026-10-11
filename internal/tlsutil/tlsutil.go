@@ -9,12 +9,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mrwiora/tpm2-kira/vaultproto"
@@ -101,6 +104,16 @@ func Pin(d state.Dir) (string, error) {
 		return "", err
 	}
 	return vaultproto.PinOf(c.RawSubjectPublicKeyInfo), nil
+}
+
+// CurlPin is a pin ("sha256:" and hex) as curl's --pinnedpubkey takes it:
+// "sha256//" and base64.
+func CurlPin(pin string) string {
+	raw, err := hex.DecodeString(strings.TrimPrefix(pin, "sha256:"))
+	if err != nil {
+		return ""
+	}
+	return "sha256//" + base64.StdEncoding.EncodeToString(raw)
 }
 
 // ServerConfig is the machine-facing TLS configuration: TLS 1.3 only.

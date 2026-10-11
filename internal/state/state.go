@@ -5,6 +5,7 @@
 //	tls/key.pem, cert.pem   the TLS key and its self-signed certificate
 //	devices/<id>.json       one Device per enrolled machine (hex device ID)
 //	tokens/<sha256>.json    one Token per unused enrolment token
+//	operators/<name>.json   one Operator per bearer token of the operator interface
 //	audit.log               JSON lines, append-only
 //	lock                    held by serve, init and reseal (flock)
 //
@@ -48,6 +49,10 @@ type Config struct {
 	TPM         string  `json:"tpm"`          // TPM device or swtpm socket
 	AdminSocket string  `json:"admin_socket"` // the CLI's Unix socket
 
+	// OperatorListen is the operator interface's HTTPS address, e.g.
+	// ":8444"; empty: off.
+	OperatorListen string `json:"operator_listen,omitempty"`
+
 	// RecoveryPublic is the X25519 public key of the recovery key: every
 	// device key is also encrypted to it, and only the recovery key opens
 	// those copies (keys.RecoveryKey).
@@ -57,12 +62,16 @@ type Config struct {
 // Device is devices/<id>.json: what the vault pinned of a machine at
 // enrolment, its release state, and its keys.
 type Device struct {
-	ID       []byte `json:"device_id"`
-	Name     string `json:"name"`
-	Label    string `json:"label"`
-	Mode     string `json:"mode"` // vaultproto.ModeAuto or ModeApprove
-	EKPublic []byte `json:"ek_public"`
-	EKCert   []byte `json:"ek_cert,omitempty"`
+	ID    []byte `json:"device_id"`
+	Name  string `json:"name"`
+	Label string `json:"label"`
+	Mode  string `json:"mode"` // vaultproto.ModeAuto or ModeApprove
+	// PepperRequired: the machine's key is derived with an operator's
+	// pepper as well, so every release needs an approval carrying it. Such
+	// a device is always in approve mode.
+	PepperRequired bool   `json:"pepper_required"`
+	EKPublic       []byte `json:"ek_public"`
+	EKCert         []byte `json:"ek_cert,omitempty"`
 
 	AKPublic            []byte               `json:"ak_public"`
 	SigningPublic       []byte               `json:"signing_public"`
@@ -129,7 +138,7 @@ func (d Dir) AuditPath() string { return d.path("audit.log") }
 
 // Create makes the directory tree, 0700.
 func (d Dir) Create() error {
-	for _, p := range []string{d.Path, d.path("tls"), d.path("devices"), d.path("tokens")} {
+	for _, p := range []string{d.Path, d.path("tls"), d.path("devices"), d.path("tokens"), d.path("operators")} {
 		if err := os.MkdirAll(p, 0o700); err != nil {
 			return err
 		}
@@ -258,6 +267,82 @@ func (d Dir) ConsumeToken(hash []byte) error {
 		return err
 	}
 	return syncDir(d.path("tokens"))
+}
+
+// Operator is operators/<name>.json: a bearer token of the operator
+// interface, kept only as its SHA-256.
+type Operator struct {
+	Name        string    `json:"name"`
+	TokenSHA256 []byte    `json:"token_sha256"`
+	Created     time.Time `json:"created"`
+}
+
+// ValidOperatorName is a name an operator file can carry: 1 to 64 of
+// letters, digits, '.', '_' and '-', not starting with '.'.
+func ValidOperatorName(name string) bool {
+	if name == "" || len(name) > 64 || name[0] == '.' {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func (d Dir) operatorPath(name string) string { return d.path("operators", name+".json") }
+
+// PutOperator stores a new operator; an existing name is fs.ErrExist.
+func (d Dir) PutOperator(o *Operator) error {
+	if !ValidOperatorName(o.Name) {
+		return fmt.Errorf("operator name %q: 1 to 64 letters, digits, '.', '_' or '-'", o.Name)
+	}
+	if err := os.MkdirAll(d.path("operators"), 0o700); err != nil {
+		return err
+	}
+	if _, err := os.Stat(d.operatorPath(o.Name)); err == nil {
+		return fs.ErrExist
+	}
+	return writeJSON(d.operatorPath(o.Name), o)
+}
+
+// Operators reads every operator, ordered by name.
+func (d Dir) Operators() ([]*Operator, error) {
+	ents, err := os.ReadDir(d.path("operators"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var out []*Operator
+	for _, e := range ents {
+		name, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || !ValidOperatorName(name) {
+			continue
+		}
+		var o Operator
+		if err := readJSON(d.operatorPath(name), &o); err != nil {
+			return nil, err
+		}
+		out = append(out, &o)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// RemoveOperator removes an operator; an unknown one is ErrNotFound.
+func (d Dir) RemoveOperator(name string) error {
+	if !ValidOperatorName(name) {
+		return ErrNotFound
+	}
+	if err := os.Remove(d.operatorPath(name)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return syncDir(d.path("operators"))
 }
 
 func readJSON(path string, v any) error {

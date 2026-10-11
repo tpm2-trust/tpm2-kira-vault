@@ -1,6 +1,8 @@
-// Package server is the vault's two HTTP interfaces: the machine-facing
-// protocol of vaultproto (served over TLS), and the admin interface (served
-// on a root-only Unix socket, the CLI's counterpart).
+// Package server is the vault's HTTP interfaces: the machine-facing
+// protocol of vaultproto (served over TLS), the admin interface (served on
+// a root-only Unix socket, the CLI's counterpart), and the operator
+// interface (a subset of the admin handlers over TLS, behind a bearer token
+// per operator, on a listener of its own).
 //
 // The rules are those of docs/REMOTE-UNLOCK.md §6.1 of tpm2-kira:
 //
@@ -8,7 +10,12 @@
 //     a terminal answer (released, denied) consumes it;
 //   - a verified request of a device in approve mode stays pending for
 //     PendingTTL and is denied then; the machine sends the same request
-//     again and is answered by its request ID;
+//     again and is answered by its request ID; an approved request is
+//     answered for ChallengeTTL more;
+//   - a device enrolled with a pepper is always in approve mode, and the
+//     approval carries the pepper. It is kept in memory with the request,
+//     passed on once in the releasing answer, and wiped: never written,
+//     never logged;
 //   - MaxFailures failed verifications in a row lock the device until an
 //     operator unlocks it;
 //   - at most RateLimit challenges per device per RateWindow;
@@ -82,6 +89,8 @@ type Server struct {
 	enrols   map[string]*enrolment
 	requests map[string]*request
 	rate     map[string][]time.Time
+
+	authFails map[string][]time.Time // failed operator authentications per remote address
 }
 
 type enrolment struct {
@@ -111,6 +120,16 @@ type request struct {
 	digest  []byte // of the verified request, which a re-sent one must equal
 	checked *vaultproto.Checked
 	remote  string
+
+	actor  string // who approved or denied it
+	pepper []byte // the approval's pepper, until the release passes it on
+}
+
+// forget drops a request and wipes its pepper.
+func (s *Server) forget(q *request) {
+	clear(q.pepper)
+	q.pepper = nil
+	delete(s.requests, q.id)
 }
 
 // New makes a Server.
@@ -128,6 +147,8 @@ func New(o Options) *Server {
 		enrols:   map[string]*enrolment{},
 		requests: map[string]*request{},
 		rate:     map[string][]time.Time{},
+
+		authFails: map[string][]time.Time{},
 	}
 }
 
@@ -183,15 +204,52 @@ func (s *Server) answer(w http.ResponseWriter, v any, err error) {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, MaxBody)
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			return fail(http.StatusRequestEntityTooLarge, "the request is larger than %d bytes", MaxBody)
-		}
+	body, err := readBody(w, r)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, v); err != nil {
 		return fail(http.StatusBadRequest, "the request does not parse: %v", err)
 	}
 	return nil
+}
+
+// readBody reads a request's body, at most the interface's limit.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	limit := bodyLimit(r)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return nil, fail(http.StatusRequestEntityTooLarge, "the request is larger than %d bytes", limit)
+		}
+		return nil, fail(http.StatusBadRequest, "reading the request: %v", err)
+	}
+	return body, nil
+}
+
+type ctxKey int
+
+const (
+	limitKey ctxKey = iota
+	actorKey
+)
+
+// bodyLimit is MaxBody, or the smaller limit of the operator interface.
+func bodyLimit(r *http.Request) int64 {
+	if l, ok := r.Context().Value(limitKey).(int64); ok {
+		return l
+	}
+	return MaxBody
+}
+
+// actorOf is who calls the admin handlers: "admin" on the Unix socket, the
+// operator's name on the operator interface.
+func actorOf(r *http.Request) string {
+	if a, ok := r.Context().Value(actorKey).(string); ok {
+		return a
+	}
+	return "admin"
 }
 
 func randomID() string {
@@ -349,12 +407,17 @@ func (s *Server) enrolConfirm(c *vaultproto.EnrolConfirm, remote string) (*vault
 	if err != nil {
 		return nil, err
 	}
+	mode := e.token.Mode
+	if req.Pepper {
+		mode = vaultproto.ModeApprove
+	}
 	pinned := vaultproto.DeviceOf(req)
 	rec := &state.Device{
 		ID:                  pinned.DeviceID,
 		Name:                req.Name,
 		Label:               req.Label,
-		Mode:                e.token.Mode,
+		Mode:                mode,
+		PepperRequired:      req.Pepper,
 		EKPublic:            req.EKPublic,
 		EKCert:              req.EKCert,
 		AKPublic:            pinned.AKPublic,
@@ -378,15 +441,18 @@ func (s *Server) enrolConfirm(c *vaultproto.EnrolConfirm, remote string) (*vault
 		return nil, err
 	}
 	// A device enrolled again starts without the old one's requests.
-	for id, q := range s.requests {
+	for _, q := range s.requests {
 		if bytes.Equal(q.device, rec.ID) {
-			delete(s.requests, id)
+			s.forget(q)
 		}
 	}
 	delete(s.rate, dev)
 	detail := "token " + e.token.Name
 	if e.token.Replace != nil {
 		detail += ", replacing the device's earlier enrolment"
+	}
+	if rec.PepperRequired {
+		detail += ", with a pepper"
 	}
 	if err := s.logAudit(state.Entry{Event: "enrol-confirm", Device: dev, Name: req.Name, Request: c.EnrolID, Remote: remote, Result: "enrolled", Detail: fmt.Sprintf("%s, mode %s, generation %d", detail, rec.Mode, rec.MinGeneration)}); err != nil {
 		return nil, err
@@ -457,9 +523,9 @@ func (s *Server) sweep(now time.Time) {
 			delete(s.enrols, id)
 		}
 	}
-	for id, q := range s.requests {
+	for _, q := range s.requests {
 		if now.Sub(q.expires) > ChallengeTTL {
-			delete(s.requests, id)
+			s.forget(q)
 		}
 	}
 }
@@ -474,6 +540,9 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		res, err = s.release(&req, r.RemoteAddr)
 	}
 	s.answer(w, res, err)
+	if res != nil {
+		clear(res.Pepper)
+	}
 }
 
 func requestDigest(req *vaultproto.ReleaseRequest) []byte {
@@ -498,7 +567,7 @@ func (s *Server) release(req *vaultproto.ReleaseRequest, remote string) (*vaultp
 
 	// deny consumes the request and answers denied.
 	deny := func(reason string) (*vaultproto.ReleaseResponse, error) {
-		delete(s.requests, q.id)
+		s.forget(q)
 		entry.Result, entry.Detail = "denied", reason
 		if err := s.logAudit(entry); err != nil {
 			return nil, err
@@ -517,6 +586,10 @@ func (s *Server) release(req *vaultproto.ReleaseRequest, remote string) (*vaultp
 		return &vaultproto.ReleaseResponse{Status: vaultproto.StatusPending, RetryAfter: RetryAfter}, nil
 	case denied:
 		return deny("an operator denied the request")
+	case approved:
+		if !now.Before(q.expires) {
+			return deny("the approval expired: the machine did not ask again in time")
+		}
 	case fresh:
 		if !now.Before(q.expires) {
 			return deny("the challenge expired")
@@ -558,7 +631,7 @@ func (s *Server) release(req *vaultproto.ReleaseRequest, remote string) (*vaultp
 		}
 	}
 
-	if q.state == fresh && d.Mode == vaultproto.ModeApprove {
+	if q.state == fresh && (d.Mode == vaultproto.ModeApprove || d.PepperRequired) {
 		q.state = pending
 		q.digest = requestDigest(req)
 		q.checked = checked
@@ -568,6 +641,10 @@ func (s *Server) release(req *vaultproto.ReleaseRequest, remote string) (*vaultp
 			return nil, err
 		}
 		return &vaultproto.ReleaseResponse{Status: vaultproto.StatusPending, RetryAfter: RetryAfter}, nil
+	}
+
+	if d.PepperRequired && len(q.pepper) == 0 { // decide refuses such an approval; this keeps it so
+		return deny("this device was enrolled with a pepper, and the approval carries none")
 	}
 
 	kdev, err := s.sealer.Unseal(&d.Sealed)
@@ -600,13 +677,19 @@ func (s *Server) release(req *vaultproto.ReleaseRequest, remote string) (*vaultp
 	if err := s.dir.SaveDevice(d); err != nil {
 		return nil, err
 	}
-	delete(s.requests, q.id)
+	res := &vaultproto.ReleaseResponse{Status: vaultproto.StatusReleased, Remote: &wrapped}
 	entry.Result, entry.Detail = "released", fmt.Sprintf("generation %d, TPM reset count %d", checked.Generation, checked.ResetCount)
 	if q.state == approved {
-		entry.Detail += ", approved by an operator"
+		entry.Detail += ", approved by " + q.actor
 	}
+	if d.PepperRequired {
+		res.Pepper = append([]byte(nil), q.pepper...)
+		entry.Detail += ", with a pepper"
+	}
+	s.forget(q)
 	if err := s.logAudit(entry); err != nil {
+		clear(res.Pepper)
 		return nil, err
 	}
-	return &vaultproto.ReleaseResponse{Status: vaultproto.StatusReleased, Remote: &wrapped}, nil
+	return res, nil
 }

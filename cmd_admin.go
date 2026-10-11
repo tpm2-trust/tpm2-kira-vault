@@ -139,9 +139,9 @@ func cmdAdmin(cmd string, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "DEVICE\tNAME\tMODE\tSTATE\tGENERATION\tLAST RELEASE")
+		fmt.Fprintln(tw, "DEVICE\tNAME\tMODE\tPEPPER\tSTATE\tGENERATION\tLAST RELEASE")
 		for _, d := range list {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", d.ID, d.Name, d.Mode, deviceState(&d), d.MinGeneration, when(d.LastRelease))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", d.ID, d.Name, d.Mode, yesNo(d.Pepper), deviceState(&d), d.MinGeneration, when(d.LastRelease))
 		}
 		return tw.Flush()
 
@@ -187,9 +187,9 @@ func cmdAdmin(cmd string, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "REQUEST\tDEVICE\tNAME\tSTATE\tGENERATION\tFROM\tEXPIRES")
+		fmt.Fprintln(tw, "REQUEST\tDEVICE\tNAME\tSTATE\tPEPPER\tGENERATION\tFROM\tEXPIRES")
 		for _, q := range list {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", q.ID, q.DeviceID, q.Name, q.State, q.Generation, q.Remote, q.Expires.Local().Format(time.TimeOnly))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", q.ID, q.DeviceID, q.Name, q.State, yesNo(q.Pepper), q.Generation, q.Remote, q.Expires.Local().Format(time.TimeOnly))
 		}
 		return tw.Flush()
 
@@ -201,11 +201,55 @@ func cmdAdmin(cmd string, args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("unknown request command %q", pos[0])
 		}
 		var q server.RequestView
+		// A device enrolled with a pepper is approved over the operator
+		// interface, which carries the pepper; the CLI does not take one.
 		if err := c.do("POST", "/v1/requests/"+esc(pos[1])+"/"+pos[0], struct{}{}, &q); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "Request %s of device %s: %s. The machine is answered when it asks again.\n", q.ID, q.DeviceID, q.State)
 		return nil
+
+	case "operators":
+		if err := want(0, "operators"); err != nil {
+			return err
+		}
+		var list []server.OperatorView
+		if err := c.do("GET", "/v1/operators", nil, &list); err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "OPERATOR\tCREATED")
+		for _, o := range list {
+			fmt.Fprintf(tw, "%s\t%s\n", o.Name, o.Created.Local().Format(time.DateTime))
+		}
+		return tw.Flush()
+
+	case "operator":
+		if err := want(2, "operator add|remove NAME"); err != nil {
+			return err
+		}
+		switch pos[0] {
+		case "add":
+			var o server.OperatorAdded
+			if err := c.do("POST", "/v1/operators", server.OperatorRequest{Name: pos[1]}, &o); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Operator %s, token (shown this once):\n\n  %s\n\n", o.Name, o.Token)
+			fmt.Fprintf(stdout, "  pin:       %s\n  for curl:  --pinnedpubkey %s\n", o.Pin, o.CurlPin)
+			if o.URL == "" {
+				fmt.Fprintln(stdout, "\nThe operator interface is off: tpm2-kira-vault config set operator-listen :8444, with serve stopped.")
+			} else {
+				fmt.Fprintf(stdout, "  URL:       %s\n\nFor example:\n\n  %s\n", o.URL, o.Example)
+			}
+			return nil
+		case "remove":
+			if err := c.do("DELETE", "/v1/operators/"+esc(pos[1]), nil, nil); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Operator %s removed: its token no longer works.\n", pos[1])
+			return nil
+		}
+		return fmt.Errorf("unknown operator command %q", pos[0])
 
 	case "audit":
 		if err := want(0, "audit [--follow]"); err != nil {
@@ -228,6 +272,13 @@ func cmdAdmin(cmd string, args []string, stdout, stderr io.Writer) error {
 		return sc.Err()
 	}
 	return fmt.Errorf("unknown command %q", cmd)
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 func deviceState(d *server.DeviceView) string {
@@ -256,6 +307,7 @@ func printDevice(w io.Writer, d *server.DeviceView) {
 	fmt.Fprintf(w, "name:            %s\n", d.Name)
 	fmt.Fprintf(w, "keyslot label:   %s\n", d.Label)
 	fmt.Fprintf(w, "mode:            %s\n", d.Mode)
+	fmt.Fprintf(w, "pepper:          %s\n", yesNo(d.Pepper))
 	fmt.Fprintf(w, "state:           %s\n", deviceState(d))
 	fmt.Fprintf(w, "failures:        %d in a row\n", d.Failures)
 	fmt.Fprintf(w, "min generation:  %d\n", d.MinGeneration)

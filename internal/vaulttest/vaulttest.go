@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/go-tpm/tpm2"
@@ -35,6 +36,7 @@ type Machine struct {
 	Selection vaultproto.Selection
 	Gen       uint64
 	Approval  []byte
+	Pepper    bool               // the keyslot is enrolled with an operator's pepper
 	R         []byte             // the remote part in the clear, as the machine drew it
 	Remote    vaultproto.Wrapped // R wrapped for the TPM (EK and the AK's name stand in for the release key)
 }
@@ -108,7 +110,7 @@ func (m *Machine) EnrolRequest(token string) *vaultproto.EnrolRequest {
 		Token: token, DeviceID: m.DeviceID, Name: m.Name,
 		EKPublic: m.TPM.EKPub, AKPublic: m.TPM.AKPub,
 		SigningPublic: m.SigningPublic(), PolicyRef: m.PolicyRef, GenerationIndexName: m.GenIndex,
-		Generation: m.Gen, Selection: m.Selection, Remote: m.Remote, Label: "root",
+		Generation: m.Gen, Selection: m.Selection, Remote: m.Remote, Label: "root", Pepper: m.Pepper,
 	}
 }
 
@@ -228,4 +230,36 @@ func (m *Machine) Release(c *Client) (*vaultproto.ReleaseRequest, *vaultproto.Re
 // machine's ActivateCredential does.
 func (m *Machine) Open(w *vaultproto.Wrapped) ([]byte, error) {
 	return m.TPM.ActivateCredential(w.Credential, w.EncryptedSecret)
+}
+
+// Operator is an operator's client of the operator interface, as curl
+// with --pinnedpubkey and a bearer token is.
+type Operator struct {
+	URL   string
+	Token string
+	HTTP  *http.Client
+}
+
+// NewOperator pins the vault's key and sends token.
+func NewOperator(url, pin, token string) *Operator {
+	return &Operator{URL: url, Token: token, HTTP: NewClient(url, pin).HTTP}
+}
+
+// Do sends body (raw JSON, or nothing) and returns the status and the
+// answer.
+func (o *Operator) Do(method, path, body string) (int, []byte, error) {
+	req, err := http.NewRequest(method, o.URL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	if o.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+o.Token)
+	}
+	rsp, err := o.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rsp.Body.Close()
+	b, err := io.ReadAll(rsp.Body)
+	return rsp.StatusCode, b, err
 }

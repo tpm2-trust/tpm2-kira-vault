@@ -9,10 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mrwiora/tpm2-kira/vaultproto"
 
@@ -28,6 +28,7 @@ type DeviceView struct {
 	Name          string               `json:"name"`
 	Label         string               `json:"label"`
 	Mode          string               `json:"mode"`
+	Pepper        bool                 `json:"pepper"` // releases need an approval with the operator's pepper
 	MinGeneration uint64               `json:"min_generation"`
 	Revoked       bool                 `json:"revoked"`
 	Locked        bool                 `json:"locked"`
@@ -44,6 +45,8 @@ type RequestView struct {
 	DeviceID   string                `json:"device_id"`
 	Name       string                `json:"name"`
 	State      string                `json:"state"`
+	Pepper     bool                  `json:"pepper"` // approve it with the device's pepper
+	Actor      string                `json:"actor,omitempty"`
 	Created    time.Time             `json:"created"`
 	Expires    time.Time             `json:"expires"`
 	Remote     string                `json:"remote"`
@@ -57,9 +60,10 @@ type ModeRequest struct {
 }
 
 // ApproveRequest is the body of POST /v1/requests/{id}/approve. Pepper is
-// reserved for version 2 (docs/REMOTE-UNLOCK.md §12) and refused now.
+// required for a device enrolled with one and refused for any other: UTF-8,
+// 1 to vaultproto.MaxPepper bytes.
 type ApproveRequest struct {
-	Pepper json.RawMessage `json:"pepper,omitempty"`
+	Pepper *string `json:"pepper,omitempty"`
 }
 
 // TokenRequest is the body of POST /v1/tokens.
@@ -98,6 +102,9 @@ func (s *Server) AdminHandler() http.Handler {
 	mux.HandleFunc("POST /v1/requests/{id}/deny", s.adminDecide(denied))
 	mux.HandleFunc("POST /v1/tokens", s.adminToken)
 	mux.HandleFunc("GET /v1/audit", s.adminAudit)
+	mux.HandleFunc("GET /v1/operators", s.adminOperators)
+	mux.HandleFunc("POST /v1/operators", s.adminOperatorAdd)
+	mux.HandleFunc("DELETE /v1/operators/{name}", s.adminOperatorRemove)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such path")
 	})
@@ -106,7 +113,7 @@ func (s *Server) AdminHandler() http.Handler {
 
 func viewOf(d *state.Device) DeviceView {
 	return DeviceView{
-		ID: hex.EncodeToString(d.ID), Name: d.Name, Label: d.Label, Mode: d.Mode,
+		ID: hex.EncodeToString(d.ID), Name: d.Name, Label: d.Label, Mode: d.Mode, Pepper: d.PepperRequired,
 		MinGeneration: d.MinGeneration, Revoked: d.Revoked, Locked: d.Locked, Failures: d.Failures,
 		EnrolledAt: d.EnrolledAt, LastRelease: d.LastRelease, Selection: d.Selection, VaultPCRs: d.Sealed.PCRs,
 	}
@@ -162,7 +169,7 @@ func (s *Server) adminDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 // changeDevice applies change to a device, saves and logs it.
-func (s *Server) changeDevice(ref, event string, change func(*state.Device) error) (*DeviceView, error) {
+func (s *Server) changeDevice(ref, event, actor string, change func(*state.Device) error) (*DeviceView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, err := s.resolve(ref)
@@ -179,8 +186,16 @@ func (s *Server) changeDevice(ref, event string, change func(*state.Device) erro
 	if event == "mode" {
 		detail = d.Mode
 	}
-	if err := s.logAudit(state.Entry{Event: event, Device: hex.EncodeToString(d.ID), Name: d.Name, Actor: "admin", Result: "done", Detail: detail}); err != nil {
+	if err := s.logAudit(state.Entry{Event: event, Device: hex.EncodeToString(d.ID), Name: d.Name, Actor: actor, Result: "done", Detail: detail}); err != nil {
 		return nil, err
+	}
+	if d.Revoked { // an approved release of a revoked device is denied: its pepper goes now
+		for _, q := range s.requests {
+			if bytes.Equal(q.device, d.ID) {
+				clear(q.pepper)
+				q.pepper = nil
+			}
+		}
 	}
 	v := viewOf(d)
 	return &v, nil
@@ -188,7 +203,7 @@ func (s *Server) changeDevice(ref, event string, change func(*state.Device) erro
 
 func (s *Server) adminSetFlag(event string, set func(*state.Device)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		v, err := s.changeDevice(r.PathValue("id"), event, func(d *state.Device) error { set(d); return nil })
+		v, err := s.changeDevice(r.PathValue("id"), event, actorOf(r), func(d *state.Device) error { set(d); return nil })
 		s.answer(w, v, err)
 	}
 }
@@ -210,7 +225,13 @@ func (s *Server) adminMode(w http.ResponseWriter, r *http.Request) {
 		s.answer(w, nil, err)
 		return
 	}
-	v, err := s.changeDevice(r.PathValue("id"), "mode", func(d *state.Device) error { d.Mode = m.Mode; return nil })
+	v, err := s.changeDevice(r.PathValue("id"), "mode", actorOf(r), func(d *state.Device) error {
+		if d.PepperRequired && m.Mode != vaultproto.ModeApprove {
+			return fail(http.StatusBadRequest, "this device was enrolled with a pepper: it is released only on an operator's approval with it, so its mode stays approve")
+		}
+		d.Mode = m.Mode
+		return nil
+	})
 	s.answer(w, v, err)
 }
 
@@ -225,9 +246,9 @@ func (s *Server) adminRequests(w http.ResponseWriter, r *http.Request) {
 		if q.state == fresh || !now.Before(q.expires) {
 			continue
 		}
-		v := RequestView{ID: q.id, DeviceID: hex.EncodeToString(q.device), State: stateNames[q.state], Created: q.created, Expires: q.expires, Remote: q.remote}
+		v := RequestView{ID: q.id, DeviceID: hex.EncodeToString(q.device), State: stateNames[q.state], Created: q.created, Expires: q.expires, Remote: q.remote, Actor: q.actor}
 		if d, err := s.dir.Device(q.device); err == nil {
-			v.Name = d.Name
+			v.Name, v.Pepper = d.Name, d.PepperRequired
 		}
 		if q.checked != nil {
 			v.Generation, v.PCRValues = q.checked.Generation, q.checked.PCRValues
@@ -240,32 +261,47 @@ func (s *Server) adminRequests(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminDecide(to reqState) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var pepper []byte
 		if to == approved {
-			var a ApproveRequest
-			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBody))
+			body, err := readBody(w, r)
 			if err != nil {
-				s.answer(w, nil, fail(http.StatusBadRequest, "reading the request: %v", err))
+				s.answer(w, nil, err)
 				return
 			}
+			if !utf8.Valid(body) {
+				s.answer(w, nil, fail(http.StatusBadRequest, "the request is not UTF-8"))
+				return
+			}
+			var a ApproveRequest
 			if len(bytes.TrimSpace(body)) > 0 {
 				if err := json.Unmarshal(body, &a); err != nil {
 					s.answer(w, nil, fail(http.StatusBadRequest, "the request does not parse: %v", err))
 					return
 				}
 			}
-			if len(a.Pepper) > 0 && !bytes.Equal(a.Pepper, []byte("null")) {
-				s.answer(w, nil, fail(http.StatusBadRequest, "pepper is not supported yet"))
-				return
+			clear(body)
+			if a.Pepper != nil {
+				pepper = []byte(*a.Pepper)
+				if len(pepper) == 0 || len(pepper) > vaultproto.MaxPepper {
+					s.answer(w, nil, fail(http.StatusBadRequest, "a pepper has 1 to %d bytes", vaultproto.MaxPepper))
+					return
+				}
 			}
 		}
-		v, err := s.decide(r.PathValue("id"), to)
+		v, err := s.decide(r.PathValue("id"), to, actorOf(r), pepper)
+		if err != nil {
+			clear(pepper)
+		}
 		s.answer(w, v, err)
 	}
 }
 
-func (s *Server) decide(id string, to reqState) (*RequestView, error) {
+// decide approves or denies a pending request. An approval of a device
+// enrolled with a pepper takes ownership of the pepper.
+func (s *Server) decide(id string, to reqState, actor string, pepper []byte) (*RequestView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	q := s.requests[id]
 	if q == nil || q.state == fresh {
 		return nil, fail(http.StatusNotFound, "no pending request %q", id)
@@ -273,16 +309,35 @@ func (s *Server) decide(id string, to reqState) (*RequestView, error) {
 	if q.state != pending {
 		return nil, fail(http.StatusConflict, "request %s is %s already", id, stateNames[q.state])
 	}
-	if !s.now().Before(q.expires) {
+	if !now.Before(q.expires) {
 		return nil, fail(http.StatusConflict, "request %s expired", id)
 	}
-	q.state = to
-	event := map[reqState]string{approved: "approve", denied: "deny"}[to]
-	if err := s.logAudit(state.Entry{Event: event, Device: hex.EncodeToString(q.device), Request: q.id, Actor: "admin", Result: "done"}); err != nil {
-		q.state = pending
+	d, err := s.dir.Device(q.device)
+	if err != nil {
 		return nil, err
 	}
-	return &RequestView{ID: q.id, DeviceID: hex.EncodeToString(q.device), State: stateNames[q.state], Created: q.created, Expires: q.expires, Remote: q.remote}, nil
+	detail := ""
+	if to == approved {
+		switch {
+		case d.PepperRequired && pepper == nil:
+			return nil, fail(http.StatusBadRequest, "this device was enrolled with a pepper: approve with it")
+		case !d.PepperRequired && pepper != nil:
+			return nil, fail(http.StatusBadRequest, "this device was enrolled without a pepper")
+		case pepper != nil:
+			detail = "with a pepper"
+		}
+	} else if pepper != nil {
+		return nil, fail(http.StatusBadRequest, "a denial takes no pepper")
+	}
+	event := map[reqState]string{approved: "approve", denied: "deny"}[to]
+	if err := s.logAudit(state.Entry{Event: event, Device: hex.EncodeToString(q.device), Name: d.Name, Request: q.id, Actor: actor, Result: "done", Detail: detail}); err != nil {
+		return nil, err
+	}
+	q.state, q.actor, q.pepper = to, actor, pepper
+	if to == approved {
+		q.expires = now.Add(ChallengeTTL) // for the machine's next re-send
+	}
+	return &RequestView{ID: q.id, DeviceID: hex.EncodeToString(q.device), Name: d.Name, State: stateNames[q.state], Pepper: d.PepperRequired, Actor: actor, Created: q.created, Expires: q.expires, Remote: q.remote}, nil
 }
 
 func (s *Server) adminToken(w http.ResponseWriter, r *http.Request) {

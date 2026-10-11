@@ -20,7 +20,9 @@ const usage = `tpm2-kira-vault keeps the remote parts of tpm2-kira's tpm+vault k
 and releases each to its machine's TPM at boot (tpm2-kira docs/REMOTE-UNLOCK.md).
 
 Usage:
-  tpm2-kira-vault init   [--dir DIR] [--listen :8443] [--url https://HOST:8443] [--pcrs 7] [--tpm /dev/tpmrm0] [--admin-socket PATH]
+  tpm2-kira-vault init   [--dir DIR] [--listen :8443] [--url https://HOST:8443] [--pcrs 7] [--tpm /dev/tpmrm0]
+                         [--admin-socket PATH] [--operator-listen :8444]
+  tpm2-kira-vault config set operator-listen ADDR|""   [--dir DIR]
   tpm2-kira-vault serve  [--dir DIR]
   tpm2-kira-vault token create --name NAME [--mode auto|approve] [--ttl 1h] [--replace DEVICE]
   tpm2-kira-vault devices
@@ -29,11 +31,13 @@ Usage:
   tpm2-kira-vault requests
   tpm2-kira-vault request approve|deny ID
   tpm2-kira-vault audit  [--follow]
+  tpm2-kira-vault operators
+  tpm2-kira-vault operator add|remove NAME
   tpm2-kira-vault reseal [--dir DIR] [--pcrs 7]
   tpm2-kira-vault help
 
-init and reseal work on the state directory (default /var/lib/tpm2-kira-vault)
-and refuse while serve runs. The other commands talk to the running serve over
+init, config and reseal work on the state directory (default
+/var/lib/tpm2-kira-vault) and refuse while serve runs. The other commands talk to the running serve over
 its admin socket (default /run/tpm2-kira-vault/admin.sock; --socket PATH, or
 the one in DIR's configuration with --dir DIR).
 
@@ -43,6 +47,12 @@ without a PCR policy.
 
 reseal asks for the vault recovery key shown at init, and seals every device
 key to the vault's current PCR values.
+
+The operator interface (off unless operator-listen is set) serves
+GET /v1/requests, POST /v1/requests/{id}/approve|deny, GET /v1/devices and
+GET /v1/devices/{id} over HTTPS with the vault's certificate, to operators
+with a bearer token from 'operator add'. A device enrolled with a pepper is
+approved with {"pepper":"..."}.
 `
 
 // newSealer is the sealing backend for a TPM path; tests replace it.
@@ -74,7 +84,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return cmdServe(rest, stderr)
 	case "reseal":
 		return cmdReseal(rest, stdin, stdout, stderr)
-	case "token", "devices", "device", "requests", "request", "audit":
+	case "config":
+		return cmdConfig(rest, stdout, stderr)
+	case "token", "devices", "device", "requests", "request", "audit", "operators", "operator":
 		return cmdAdmin(cmd, rest, stdout, stderr)
 	}
 	return fmt.Errorf("unknown command %q (tpm2-kira-vault help)", cmd)

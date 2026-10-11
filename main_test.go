@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -14,7 +15,9 @@ import (
 	"github.com/mrwiora/tpm2-kira/vaultproto"
 
 	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
+	"github.com/mrwiora/tpm2-kira-vault/internal/server"
 	"github.com/mrwiora/tpm2-kira-vault/internal/state"
+	"github.com/mrwiora/tpm2-kira-vault/internal/tlsutil"
 	"github.com/mrwiora/tpm2-kira-vault/internal/vaulttest"
 )
 
@@ -51,6 +54,7 @@ var (
 	pinRE      = regexp.MustCompile(`pin:\s+(sha256:[0-9a-f]{64})`)
 	recoveryRE = regexp.MustCompile(`\n    ([A-Z2-7]{4}(?:-[A-Z2-7]{1,4}){12})\n`)
 	tokenRE    = regexp.MustCompile(`token:\s+(\S+)`)
+	operatorRE = regexp.MustCompile(`token \(shown this once\):\n\n  (\S+)\n`)
 )
 
 // initVault runs init with these extra arguments.
@@ -99,10 +103,51 @@ func (v *vault) start() {
 	})
 }
 
+// operator adds an operator with the CLI and returns its client of the
+// operator interface.
+func (v *vault) operator(name string) *vaulttest.Operator {
+	v.t.Helper()
+	out, err := cli(v.t, "", "operator", "add", name, "--socket", v.sock)
+	if err != nil {
+		v.t.Fatalf("operator add: %v\n%s", err, out)
+	}
+	m := operatorRE.FindStringSubmatch(out)
+	if m == nil {
+		v.t.Fatalf("operator add output:\n%s", out)
+	}
+	cfg, _ := state.Dir{Path: v.dir}.Config()
+	u := server.OperatorURL(cfg)
+	if !strings.Contains(out, "curl -k --pinnedpubkey "+tlsutil.CurlPin(v.pin)+" -H 'Authorization: Bearer "+m[1]+"' "+u+"/v1/requests") {
+		v.t.Fatalf("operator add output:\n%s", out)
+	}
+	return vaulttest.NewOperator(u, v.pin, m[1])
+}
+
+// approve approves the machine's pending request over the operator
+// interface and returns the release.
+func approve(t *testing.T, v *vault, o *vaulttest.Operator, m *vaulttest.Machine, body string) *vaultproto.ReleaseResponse {
+	t.Helper()
+	req, res, err := m.Release(v.client())
+	if err != nil || res.Status != vaultproto.StatusPending {
+		t.Fatalf("approve mode: %v %+v", err, res)
+	}
+	if code, b, err := o.Do("POST", "/v1/requests/"+req.RequestID+"/approve", body); err != nil || code != 200 {
+		t.Fatalf("approve: %d %s %v", code, b, err)
+	}
+	if res, err = v.client().Send(req); err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
 func (v *vault) client() *vaulttest.Client { return vaulttest.NewClient(v.url, v.pin) }
 
 // enrol creates a token with the CLI and enrols a machine with it.
-func (v *vault) enrol(name string) *vaulttest.Machine {
+func (v *vault) enrol(name string) *vaulttest.Machine { return v.enrolWith(name, false) }
+
+// enrolWith enrols a machine whose keyslot takes an operator's pepper or
+// not.
+func (v *vault) enrolWith(name string, pepper bool) *vaulttest.Machine {
 	v.t.Helper()
 	out, err := cli(v.t, "", "token", "create", "--name", name, "--socket", v.sock)
 	if err != nil {
@@ -116,6 +161,7 @@ func (v *vault) enrol(name string) *vaulttest.Machine {
 	if err != nil {
 		v.t.Fatal(err)
 	}
+	m.Pepper = pepper
 	if _, err := m.Enrol(v.client(), tok[1]); err != nil {
 		v.t.Fatalf("enrol: %v", err)
 	}
@@ -154,6 +200,7 @@ func TestCommands(t *testing.T) {
 	sealer := vaulttest.NewSealer()
 	useSealer(t, sealer)
 	v := initVault(t)
+	opAddr := freePort(t)
 	if _, err := cli(t, "", "init", "--dir", v.dir, "--url", v.url); err == nil || !strings.Contains(err.Error(), "holds a vault already") {
 		t.Fatalf("init twice: %v", err)
 	}
@@ -221,6 +268,53 @@ func TestCommands(t *testing.T) {
 	}
 	v.start()
 	wantReleased(t, m, v.release(m))
+	v.stop()
+
+	// The operator interface: config set refuses while serve runs, and
+	// takes effect at its next start.
+	v.start()
+	if _, err := cli(t, "", "config", "set", "operator-listen", opAddr, "--dir", v.dir); !errors.Is(err, state.ErrLocked) {
+		t.Fatalf("config set while serving: %v", err)
+	}
+	out, err = cli(t, "", "operator", "add", "alice", "--socket", v.sock)
+	if err != nil || !strings.Contains(out, "The operator interface is off") || !strings.Contains(out, tlsutil.CurlPin(v.pin)) {
+		t.Fatalf("operator add while off: %v\n%s", err, out)
+	}
+	cli(t, "", "operator", "remove", "alice", "--socket", v.sock)
+	v.stop()
+	if _, err := cli(t, "", "config", "set", "operator-listen", "nonsense", "--dir", v.dir); err == nil {
+		t.Fatal("a bad address was accepted")
+	}
+	if out, err := cli(t, "", "config", "set", "operator-listen", opAddr, "--dir", v.dir); err != nil || !strings.Contains(out, opAddr) {
+		t.Fatalf("config set: %v\n%s", err, out)
+	}
+	v.start()
+	alice := v.operator("alice")
+	v.operator("bob")
+	if out, err := cli(t, "", "operators", "--socket", v.sock); err != nil || !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
+		t.Fatalf("operators: %v\n%s", err, out)
+	}
+	p := v.enrolWith("db-04", true)
+	if out, err := cli(t, "", "device", "show", "db-04", "--socket", v.sock); err != nil || !strings.Contains(out, "pepper:          yes") || !strings.Contains(out, "mode:            approve") {
+		t.Fatalf("show a pepper device: %v\n%s", err, out)
+	}
+	if _, err := cli(t, "", "device", "mode", "db-04", "auto", "--socket", v.sock); err == nil || !strings.Contains(err.Error(), "pepper") {
+		t.Fatalf("mode auto on a pepper device: %v", err)
+	}
+	res = approve(t, v, alice, p, `{"pepper":"s3cret"}`)
+	wantReleased(t, p, res)
+	if string(res.Pepper) != "s3cret" {
+		t.Fatalf("released pepper %q", res.Pepper)
+	}
+	if out, err := cli(t, "", "audit", "--socket", v.sock); err != nil || !strings.Contains(out, "approve  done  "+hex.EncodeToString(p.DeviceID)+" (db-04)") || !strings.Contains(out, "by alice") || strings.Contains(out, "s3cret") {
+		t.Fatalf("audit: %v\n%s", err, out)
+	}
+	if out, err := cli(t, "", "operator", "remove", "alice", "--socket", v.sock); err != nil || !strings.Contains(out, "removed") {
+		t.Fatalf("operator remove: %v\n%s", err, out)
+	}
+	if code, _, _ := alice.Do("GET", "/v1/requests", ""); code != 401 {
+		t.Fatalf("a removed operator: %d", code)
+	}
 	v.stop()
 
 	// Reseal to no PCRs warns, and is kept in the configuration.
