@@ -8,8 +8,11 @@ ConditionPathExists=/var/lib/tpm2-kira-vault/config.json
 [Service]
 Type=simple
 # Root, because the TPM and the root-only admin socket need it; every
-# capability is dropped.
+# capability is dropped. Without CAP_DAC_OVERRIDE root reaches the TPM
+# through its group alone: /dev/tpmrm0 is root:tss on Arch, tss:tss on
+# Debian (0660 both).
 User=root
+SupplementaryGroups=tss
 ExecStart=/usr/bin/tpm2-kira-vault serve --dir /var/lib/tpm2-kira-vault
 Restart=on-failure
 RestartSec=2s
