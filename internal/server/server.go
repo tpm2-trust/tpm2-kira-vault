@@ -2,7 +2,7 @@
 // protocol of vaultproto (served over TLS), and the admin interface (served
 // on a root-only Unix socket, the CLI's counterpart).
 //
-// The rules are those of docs/VAULT.md §4.1 of tpm2-kira:
+// The rules are those of docs/REMOTE-UNLOCK.md §6.1 of tpm2-kira:
 //
 //   - a challenge is 32 random bytes, valid ChallengeTTL, for one request;
 //     a terminal answer (released, denied) consumes it;

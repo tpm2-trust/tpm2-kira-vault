@@ -57,7 +57,7 @@ type ModeRequest struct {
 }
 
 // ApproveRequest is the body of POST /v1/requests/{id}/approve. Pepper is
-// reserved for version 2 (docs/VAULT.md §8) and refused now.
+// reserved for version 2 (docs/REMOTE-UNLOCK.md §12) and refused now.
 type ApproveRequest struct {
 	Pepper json.RawMessage `json:"pepper,omitempty"`
 }

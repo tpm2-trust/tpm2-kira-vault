@@ -1,6 +1,6 @@
 // Command tpm2-kira-vault keeps the remote parts of tpm2-kira's tpm+vault
 // keyslots and releases each to its machine's TPM at boot, by the rules of
-// tpm2-kira's docs/VAULT.md.
+// tpm2-kira's docs/REMOTE-UNLOCK.md.
 package main
 
 import (
@@ -17,7 +17,7 @@ import (
 )
 
 const usage = `tpm2-kira-vault keeps the remote parts of tpm2-kira's tpm+vault keyslots
-and releases each to its machine's TPM at boot (tpm2-kira docs/VAULT.md).
+and releases each to its machine's TPM at boot (tpm2-kira docs/REMOTE-UNLOCK.md).
 
 Usage:
   tpm2-kira-vault init   [--dir DIR] [--listen :8443] [--url https://HOST:8443] [--pcrs 7] [--tpm /dev/tpmrm0] [--admin-socket PATH]
