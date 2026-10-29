@@ -1,0 +1,3 @@
+[submodule "tpm2-kira"]
+	path = tpm2-kira
+	url = https://github.com/mrwiora/tpm2-kira.git

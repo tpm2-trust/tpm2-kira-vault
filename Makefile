@@ -4,8 +4,10 @@ UNITDIR ?= /usr/lib/systemd/system
 
 .PHONY: build test test-integration vet fmt install clean
 
+# The release builds the pinned core (the submodule tpm2-kira/), never a
+# go.work around this checkout.
 build:
-	CGO_ENABLED=0 go build -trimpath -o $(BINARY) .
+	GOWORK=off CGO_ENABLED=0 go build -trimpath -o $(BINARY) .
 
 test:
 	go test ./...

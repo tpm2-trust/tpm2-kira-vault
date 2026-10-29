@@ -12,14 +12,16 @@ and its own PCRs.
 [docs/VAULT.md](../tpm2-kira/docs/VAULT.md)**: the design and
 threat model, setting up both sides, the protocol, the release rules (§6.1),
 keys at rest, the admin interface, the state directory, recovery (§6.5), the
-commands (§6.6) and the tests. The contract with tpm2-kira is its Go package
-`github.com/mrwiora/tpm2-kira/vaultproto`; this module builds against
-`../tpm2-kira` (`replace` in go.mod).
+commands (§6.6) and the tests. The contract with tpm2-kira is its core's Go
+package `github.com/mrwiora/tpm2-kira/core/vaultproto`; this module requires
+the core module alone, pinned by the git submodule `tpm2-kira/` (`replace`
+to `./tpm2-kira/core` in go.mod).
 
 ## Build
 
 ```
-make build              # ./tpm2-kira-vault, no cgo
+git clone --recurse-submodules ...   # or: git submodule update --init
+make build              # ./tpm2-kira-vault, no cgo, the pinned core (GOWORK=off)
 make test               # unit tests, no TPM
 make test-integration   # with swtpm
 sudo make install       # /usr/bin and the systemd unit

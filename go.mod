@@ -10,5 +10,6 @@ require (
 
 require golang.org/x/crypto v0.57.0 // indirect
 
-// tpm2-kira's shared core (attest, vaultproto) alone, not tpm2-kira.
-replace github.com/mrwiora/tpm2-kira/core => ../tpm2-kira/core
+// tpm2-kira's shared core (attest, vaultproto) alone, not tpm2-kira: from
+// the submodule tpm2-kira/, the commit it pins (../pin tpm2-kira moves it).
+replace github.com/mrwiora/tpm2-kira/core => ./tpm2-kira/core
