@@ -29,7 +29,7 @@ import (
 
 	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/keys"
 )
 
 // DefaultDir is the state directory of an installed vault.

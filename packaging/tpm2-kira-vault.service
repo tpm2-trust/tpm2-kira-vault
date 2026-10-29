@@ -1,6 +1,6 @@
 [Unit]
 Description=tpm2-kira vault: releases the remote parts of tpm+vault keyslots
-Documentation=https://github.com/mrwiora/tpm2-kira-vault
+Documentation=https://github.com/tpm2-trust/tpm2-kira-vault
 Wants=network-online.target
 After=network-online.target
 ConditionPathExists=/var/lib/tpm2-kira-vault/config.json

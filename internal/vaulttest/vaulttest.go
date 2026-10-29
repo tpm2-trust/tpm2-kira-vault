@@ -22,7 +22,7 @@ import (
 	"github.com/mrwiora/tpm2-kira/core/attest/attesttest"
 	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/tlsutil"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/tlsutil"
 )
 
 // Machine is a simulated machine with one tpm+vault keyslot.

@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/keys"
 )
 
 const usage = `tpm2-kira-vault keeps the remote parts of tpm2-kira's tpm+vault keyslots

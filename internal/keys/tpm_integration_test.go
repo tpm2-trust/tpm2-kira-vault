@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
-	"github.com/mrwiora/tpm2-kira-vault/internal/vaulttest"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/keys"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/vaulttest"
 )
 
 // K_dev seals under PolicyPCR, unseals while the PCRs hold, is refused

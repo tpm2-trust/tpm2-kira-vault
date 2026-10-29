@@ -22,7 +22,7 @@ import (
 
 	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/state"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/state"
 )
 
 // Generate makes an ECDSA P-256 key and a self-signed certificate for host,

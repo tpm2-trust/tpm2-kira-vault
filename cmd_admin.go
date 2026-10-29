@@ -17,8 +17,8 @@ import (
 
 	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/server"
-	"github.com/mrwiora/tpm2-kira-vault/internal/state"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/server"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/state"
 )
 
 // adminClient talks to serve over its admin socket.

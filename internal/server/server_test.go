@@ -17,11 +17,11 @@ import (
 
 	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
-	"github.com/mrwiora/tpm2-kira-vault/internal/server"
-	"github.com/mrwiora/tpm2-kira-vault/internal/state"
-	"github.com/mrwiora/tpm2-kira-vault/internal/tlsutil"
-	"github.com/mrwiora/tpm2-kira-vault/internal/vaulttest"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/keys"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/server"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/state"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/tlsutil"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/vaulttest"
 )
 
 type env struct {

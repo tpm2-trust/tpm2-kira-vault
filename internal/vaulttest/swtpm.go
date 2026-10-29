@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/go-tpm/tpm2"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/keys"
 )
 
 // StartSWTPM runs a fresh software TPM for the test and returns its socket.

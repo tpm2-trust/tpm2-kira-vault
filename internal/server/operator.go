@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/state"
-	"github.com/mrwiora/tpm2-kira-vault/internal/tlsutil"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/state"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/tlsutil"
 )
 
 // The operator interface: a subset of the admin handlers on HTTPS, for

@@ -23,10 +23,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
-	"github.com/mrwiora/tpm2-kira-vault/internal/server"
-	"github.com/mrwiora/tpm2-kira-vault/internal/state"
-	"github.com/mrwiora/tpm2-kira-vault/internal/tlsutil"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/keys"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/server"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/state"
+	"github.com/tpm2-trust/tpm2-kira-vault/internal/tlsutil"
 )
 
 // ── init ─────────────────────────────────────────────────────────────────
