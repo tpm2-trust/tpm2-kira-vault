@@ -20,7 +20,7 @@ to `./tpm2-kira/core` in go.mod).
 ## Build
 
 ```
-git clone --recurse-submodules ...   # or: git submodule update --init
+git clone --recurse-submodules ...   # or: git submodule update --init --recursive
 make build              # ./tpm2-kira-vault, no cgo, the pinned core (GOWORK=off)
 make test               # unit tests, no TPM
 make test-integration   # with swtpm
