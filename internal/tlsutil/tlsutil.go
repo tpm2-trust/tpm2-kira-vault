@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mrwiora/tpm2-kira/vaultproto"
+	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
 	"github.com/mrwiora/tpm2-kira-vault/internal/state"
 )

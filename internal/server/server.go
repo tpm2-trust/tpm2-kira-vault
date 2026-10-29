@@ -44,8 +44,8 @@ import (
 
 	"github.com/google/go-tpm/tpm2"
 
-	"github.com/mrwiora/tpm2-kira/attest"
-	"github.com/mrwiora/tpm2-kira/vaultproto"
+	"github.com/mrwiora/tpm2-kira/core/attest"
+	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
 	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
 	"github.com/mrwiora/tpm2-kira-vault/internal/state"

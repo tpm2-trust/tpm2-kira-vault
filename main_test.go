@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrwiora/tpm2-kira/vaultproto"
+	"github.com/mrwiora/tpm2-kira/core/vaultproto"
 
 	"github.com/mrwiora/tpm2-kira-vault/internal/keys"
 	"github.com/mrwiora/tpm2-kira-vault/internal/server"
