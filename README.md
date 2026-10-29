@@ -9,7 +9,7 @@ approved. The records are encrypted under keys sealed to this vault's TPM
 and its own PCRs.
 
 **The documentation is tpm2-kira's
-[docs/REMOTE-UNLOCK.md](../tpm2-kira/docs/REMOTE-UNLOCK.md)**: the design and
+[docs/VAULT.md](../tpm2-kira/docs/VAULT.md)**: the design and
 threat model, setting up both sides, the protocol, the release rules (§6.1),
 keys at rest, the admin interface, the state directory, recovery (§6.5), the
 commands (§6.6) and the tests. The contract with tpm2-kira is its Go package

@@ -4,7 +4,7 @@
 // interface (a subset of the admin handlers over TLS, behind a bearer token
 // per operator, on a listener of its own).
 //
-// The rules are those of docs/REMOTE-UNLOCK.md §6.1 of tpm2-kira:
+// The rules are those of docs/VAULT.md §6.1 of tpm2-kira:
 //
 //   - a challenge is 32 random bytes, valid ChallengeTTL, for one request;
 //     a terminal answer (released, denied) consumes it;
